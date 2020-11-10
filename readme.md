@@ -1,64 +1,59 @@
 # Benchmark
-## 多进程软件锁
+### 多进程软件锁
 1. Peterson算法(filter算法)
 2. lamport_bakery算法
 3. McGuire算法
-## 硬件锁: 
+### 硬件锁: 
 1. pthread_mutex
 
+# Inplement
+### 通过累加的结果测试原子性
+```c
+int simple_add(int* sum) {
+  (*sum)++;  // attention: ++ is prior to *
+}
 
----
-## 代码:
-  - 以peterson为例,其他类同
-  ```c
-  peterson_mutex_t peterson_mutex;
-
-  void* peterson(void* arg) {
-    int i = *(int*)arg;
-    // sleep(1);
-    peterson_mutex_lock(&peterson_mutex, i);
-    test();
-    peterson_mutex_unlock(&peterson_mutex, i);
-  }
-
-  double peterson_main() {
-    peterson_mutex_init(&peterson_mutex);
-
-    pthread_t tid_list[n];
-    int index[n] = {0};
-
-    double start = omp_get_wtime();
-    for (int i = 0; i < n; ++i) {
-      index[i] = i;
-      pthread_t tid;
-      pthread_create(&tid, NULL, peterson, index + i);
-      tid_list[i] = tid;
-    }
-    for (int i = 0; i < n; ++i) {
-      pthread_join(tid_list[i], NULL);
-    }
-    double end = omp_get_wtime();
-    printf("peterson_sum %d\n", sum);
-    return end - start;
-  }
-  ```
----
-## 结果:
-- 说明: 在默认测试状态下,一般只有peterson会产生竞态问题!
-```java
-Average delay in 3 times with 200 processes |||  peterson: 0.547366 , pthread_mutex: 0.019146 , lamport_bakery: 0.019223, McGuire: 0.018633
+int atomic_add(int* sum) {
+  __sync_fetch_and_add(sum, 1);
+}
 ```
----
-## 为了使进程陷入竞态,暂且使用sleep(1)
-- 由于软件锁都是忙等待模式,所以200进程的占用cpu忙等待有时候会卡死电脑,这里使用100进程
-```java
-Average delay in 3 times with 100 processes |||  peterson: 1.035813 , pthread_mutex: 1.016462 , lamport_bakery: 1.640425, McGuire: 1.936620
-```
-- 应改成用`alarm()`统一唤醒
----
+使用 `pthread_barrier_t` 保证竞态
+### 锁的实现
+以peterson为例,其他类同,统一设计成 `pthread/posix` 风格
+```c
+peterson_mutex_t peterson_mutex;
 
----
+int peterson_mutex_init(peterson_mutex_t* mutex) {
+  memset(mutex->level, -1, N_THREAD * sizeof(int));
+  memset(mutex->waiting, -1, N_THREAD * sizeof(int));
+}
+
+int peterson_mutex_lock(peterson_mutex_t* mutex, int i){
+  for (int l = 0; l < N_THREAD - 1; ++l) {
+    mutex->level[i] = l;
+    mutex->waiting[l] = i;
+    while (mutex->waiting[l] == i && !is_highest_level(mutex, i, l)) {
+    }
+  }
+}
+int peterson_mutex_unlock(peterson_mutex_t* mutex, int i) {
+  peterson_mutex_state[i] = 0;
+  mutex->level[i] = -1;
+}
+```
+# Compile
+`gcc benchmark.c -o benchmark -lpthread -fopenmp`
+- 调用了openmp的getwtime计时
+# Result
+- n_thread = 20 , n_loop = 10000   
+
+![](mutx.PNG)
+# Others
 - 硬件锁pthread_mutex_lock,使用`cmpxchgl`保证原子性,阻塞而不是自旋
 - 可以尝试使用`__sync_fetch_and_and`
----
-- 经测试,发现bakery算法存在问题,但是懒得改了.
+- 对于bakery算法,结果可能会有+-10的误差,可能是算法实现的问题,但是未知具体原因
+- 软件锁似乎非常容易陷入极其漫长的等待,也许是陷入了死锁,可以在过程中print一下锁的状态
+- 测试结果仅供参考,因为很可能由于实现过于简单,软件锁只陷入了很少的竞态,而一旦真正陷入竞态,速度奇慢
+  - 实际过程中,也许不会有那么多线程竞争
+  - 但有一说一,性能孱弱,基本不能用,只是停留在理论阶段的算法,能不能正常跑出来全靠运气
+- 毋庸置疑的是,原子指令是最快的
